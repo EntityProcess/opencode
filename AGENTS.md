@@ -2,6 +2,10 @@
 
 - To test opencode in the `packages/opencode` directory you can run `bun dev`
 
+## Fork Notes
+
+- Windows build notes for the EntityProcess fork: [fork/AGENTS.md](fork/AGENTS.md)
+
 ## Tool Calling
 
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE. Here is an example illustrating how to execute 3 parallel file reads in this chat environment:
