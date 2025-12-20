@@ -29,14 +29,6 @@ import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from ".
 export namespace Provider {
   const log = Log.create({ service: "provider" })
 
-  function isGpt5OrLater(modelID: string): boolean {
-    const match = /^gpt-(\d+)/.exec(modelID)
-    if (!match) {
-      return false
-    }
-    return Number(match[1]) >= 5
-  }
-
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
     "@ai-sdk/amazon-bedrock": createAmazonBedrock,
     "@ai-sdk/anthropic": createAnthropic,
@@ -99,41 +91,25 @@ export namespace Provider {
         options: {},
       }
     },
-    "github-copilot": async (input) => {
+    "github-copilot": async () => {
       return {
         autoload: false,
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          // GitHub Copilot can optionally route supported models through the Responses API.
-          // This enables settings like reasoningEffort/reasoningSummary for GPT-5.* models.
-          const useResponsesApi = Boolean(input.options?.useResponsesApi)
-
           if (modelID.includes("codex")) {
             return sdk.responses(modelID)
           }
-
-          if (useResponsesApi && isGpt5OrLater(modelID)) {
-            return sdk.responses(modelID)
-          }
-
           return sdk.chat(modelID)
         },
         options: {},
       }
     },
-    "github-copilot-enterprise": async (input) => {
+    "github-copilot-enterprise": async () => {
       return {
         autoload: false,
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          const useResponsesApi = Boolean(input.options?.useResponsesApi)
-
           if (modelID.includes("codex")) {
             return sdk.responses(modelID)
           }
-
-          if (useResponsesApi && isGpt5OrLater(modelID)) {
-            return sdk.responses(modelID)
-          }
-
           return sdk.chat(modelID)
         },
         options: {},
