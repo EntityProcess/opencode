@@ -113,18 +113,21 @@ function getGptMajor(modelID: string): number | undefined {
 	return Number(match[1])
 }
 
-function buildConfigOverlayJSON(providerID: string): string {
+function buildConfigOverlayJSON(providerIDs: string[]): string {
 	// Merge into any existing OPENCODE_CONFIG_CONTENT the user provided.
 	const existingRaw = process.env.OPENCODE_CONFIG_CONTENT
 	const existing = existingRaw ? safeJsonParse(existingRaw) : {}
 	const overlay = {
-		provider: {
-			[providerID]: {
-				options: {
-					useResponsesApi: true,
+		provider: Object.fromEntries(
+			providerIDs.map((providerID) => [
+				providerID,
+				{
+					options: {
+						useResponsesApi: true,
+					},
 				},
-			},
-		},
+			]),
+		),
 	}
 	return JSON.stringify(deepMerge(existing, overlay))
 }
@@ -187,6 +190,9 @@ async function probeModel(input: {
 async function main() {
 	const args = parseArgs(process.argv.slice(2))
 
+	// IMPORTANT: Provider/Config uses Instance.state caching. Ensure config is set BEFORE importing Provider.
+	process.env.OPENCODE_CONFIG_CONTENT = buildConfigOverlayJSON(args.providerIDs)
+
 	const { Instance } = await import("../src/project/instance")
 	const { Provider } = await import("../src/provider/provider")
 
@@ -198,12 +204,6 @@ async function main() {
 		directory: process.cwd(),
 		async fn() {
 			for (const providerID of args.providerIDs) {
-				// Force the opt-in flag for this provider.
-				process.env.OPENCODE_CONFIG_CONTENT = buildConfigOverlayJSON(providerID)
-
-				// Reload provider state by importing after env var is set.
-				// Provider uses Instance.state caching, so the safest approach is to filter the already-loaded
-				// provider models list and just probe calls (routing is decided per-model loader).
 				const provider = await Provider.getProvider(providerID)
 				if (!provider) {
 					process.stdout.write(`\n## ${providerID}\n`)
