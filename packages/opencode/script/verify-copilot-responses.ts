@@ -12,6 +12,8 @@ process.chdir(pkgDir)
 
 type Args = {
 	providerIDs: string[]
+	modelIDs: string[]
+	scope: "all" | "gpt5-plus"
 	timeoutMs: number
 	delayMs: number
 	limit: number | undefined
@@ -19,6 +21,8 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
 	const providerIDs: string[] = []
+	const modelIDs: string[] = []
+	let scope: Args["scope"] = "all"
 	let timeoutMs = 20_000
 	let delayMs = 250
 	let limit: number | undefined
@@ -31,6 +35,22 @@ function parseArgs(argv: string[]): Args {
 				const value = argv[++i]
 				if (!value) throw new Error("Missing value for --provider")
 				providerIDs.push(value)
+				break
+			}
+			case "--model":
+			case "-m": {
+				const value = argv[++i]
+				if (!value) throw new Error("Missing value for --model")
+				modelIDs.push(value)
+				break
+			}
+			case "--scope": {
+				const value = argv[++i]
+				if (!value) throw new Error("Missing value for --scope")
+				if (value !== "all" && value !== "gpt5-plus") {
+					throw new Error('--scope must be one of: all, gpt5-plus')
+				}
+				scope = value
 				break
 			}
 			case "--timeout-ms": {
@@ -71,7 +91,7 @@ function parseArgs(argv: string[]): Args {
 	if (!Number.isFinite(delayMs) || delayMs < 0) throw new Error("--delay-ms must be >= 0")
 	if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) throw new Error("--limit must be > 0")
 
-	return { providerIDs, timeoutMs, delayMs, limit }
+	return { providerIDs, modelIDs, scope, timeoutMs, delayMs, limit }
 }
 
 function printHelp() {
@@ -87,6 +107,8 @@ function printHelp() {
 			"",
 			"Options:",
 			"  -p, --provider <id>   Provider ID to test (repeatable). Default: github-copilot",
+			"  -m, --model <id>      Model ID to test (repeatable). If set, only probes these models.",
+			"      --scope <mode>    Model selection mode when --model is not set: all | gpt5-plus (default: all)",
 			"      --timeout-ms <n>  Per-model timeout (default: 20000)",
 			"      --delay-ms <n>    Delay between models (default: 250)",
 			"      --limit <n>       Only test the first N models per provider",
@@ -115,6 +137,41 @@ function matchesExtraModelID(modelID: string): boolean {
 	// Include these explicitly, even if they are not GPT-5+.
 	const extra = ["gpt-5-mini", "gpt-4.1", "gpt-4o"]
 	return extra.some((base) => modelID === base || modelID.startsWith(`${base}-`))
+}
+
+function selectModelIDs(input: {
+	availableModelIDs: string[]
+	requestedModelIDs: string[]
+	scope: Args["scope"]
+	limit: number | undefined
+}): string[] {
+	const gptAvailableModelIDs = input.availableModelIDs.filter((id) => /gpt/i.test(id))
+	const available = new Set(gptAvailableModelIDs)
+
+	let selected: string[]
+	if (input.requestedModelIDs.length > 0) {
+		const nonGpt = input.requestedModelIDs.filter((id) => !/gpt/i.test(id))
+		if (nonGpt.length > 0) {
+			process.stdout.write(`\n(Note) Skipping non-GPT model(s): ${nonGpt.join(", ")}\n`)
+		}
+		selected = input.requestedModelIDs.filter((id) => /gpt/i.test(id) && available.has(id))
+		const missing = input.requestedModelIDs.filter((id) => /gpt/i.test(id) && !available.has(id))
+		if (missing.length > 0) {
+			process.stdout.write(`\n(Note) Skipping unknown model(s): ${missing.join(", ")}\n`)
+		}
+	} else if (input.scope === "gpt5-plus") {
+		selected = gptAvailableModelIDs
+			.filter((id) => {
+				const major = getGptMajor(id)
+				if (major !== undefined && major >= 5) return true
+				return matchesExtraModelID(id)
+			})
+			.sort((a, b) => a.localeCompare(b))
+	} else {
+		selected = [...gptAvailableModelIDs].sort((a, b) => a.localeCompare(b))
+	}
+
+	return input.limit ? selected.slice(0, input.limit) : selected
 }
 
 type ApiRoute = "responses" | "chat" | "unknown"
@@ -221,16 +278,16 @@ async function probeModel(input: {
 			abortSignal: AbortSignal.timeout(input.timeoutMs),
 		})
 
-		activeProbeKey = undefined
 		const urls = requestLog.get(key) ?? []
 		return { ok: true, api: inferApiRoute(urls) }
 	} catch (e: any) {
 		const key = `${input.providerID}/${input.modelID}`
-		activeProbeKey = undefined
 		const urls = requestLog.get(key) ?? []
 		const api = inferApiRoute(urls)
 		const message = e?.message ? String(e.message) : String(e)
 		return { ok: false, api, error: message }
+	} finally {
+		activeProbeKey = undefined
 	}
 }
 
@@ -245,6 +302,11 @@ async function main() {
 
 	process.stdout.write("# Copilot Responses API Probe\n")
 	process.stdout.write(`Providers: ${args.providerIDs.join(", ")}\n`)
+	process.stdout.write(
+		args.modelIDs.length > 0
+			? `Models: ${args.modelIDs.join(", ")}\n`
+			: `Scope: ${args.scope}\n`,
+	)
 	process.stdout.write(`Timeout: ${args.timeoutMs}ms, Delay: ${args.delayMs}ms\n\n`)
 
 	let hadFailure = false
@@ -259,15 +321,13 @@ async function main() {
 					continue
 				}
 
-				const modelIDs = Object.keys(provider.models)
-					.filter((id) => {
-						const major = getGptMajor(id)
-						if (major !== undefined && major >= 5) return true
-						return matchesExtraModelID(id)
-					})
-					.sort((a, b) => a.localeCompare(b))
-
-				const selected = args.limit ? modelIDs.slice(0, args.limit) : modelIDs
+				const availableModelIDs = Object.keys(provider.models)
+				const selected = selectModelIDs({
+					availableModelIDs,
+					requestedModelIDs: args.modelIDs,
+					scope: args.scope,
+					limit: args.limit,
+				})
 
 				process.stdout.write(`\n## ${providerID}\n`)
 				process.stdout.write(`Testing ${selected.length} model(s)\n`)
