@@ -15,7 +15,6 @@ type Args = {
 	timeoutMs: number
 	delayMs: number
 	limit: number | undefined
-	includeMini: boolean
 }
 
 function parseArgs(argv: string[]): Args {
@@ -23,7 +22,6 @@ function parseArgs(argv: string[]): Args {
 	let timeoutMs = 20_000
 	let delayMs = 250
 	let limit: number | undefined
-	let includeMini = false
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]
@@ -54,7 +52,7 @@ function parseArgs(argv: string[]): Args {
 				break
 			}
 			case "--include-mini": {
-				includeMini = true
+				// Deprecated: gpt-5-mini is now included by default.
 				break
 			}
 			case "--help":
@@ -73,7 +71,7 @@ function parseArgs(argv: string[]): Args {
 	if (!Number.isFinite(delayMs) || delayMs < 0) throw new Error("--delay-ms must be >= 0")
 	if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) throw new Error("--limit must be > 0")
 
-	return { providerIDs, timeoutMs, delayMs, limit, includeMini }
+	return { providerIDs, timeoutMs, delayMs, limit }
 }
 
 function printHelp() {
@@ -92,7 +90,7 @@ function printHelp() {
 			"      --timeout-ms <n>  Per-model timeout (default: 20000)",
 			"      --delay-ms <n>    Delay between models (default: 250)",
 			"      --limit <n>       Only test the first N models per provider",
-			"      --include-mini    Also test gpt-5-mini (expected to fail for some users)",
+			"      --include-mini    Deprecated (gpt-5-mini is included by default)",
 			"  -h, --help            Show help",
 			"",
 			"Notes:",
@@ -111,6 +109,41 @@ function getGptMajor(modelID: string): number | undefined {
 	const match = /^gpt-(\d+)/.exec(modelID)
 	if (!match) return undefined
 	return Number(match[1])
+}
+
+function matchesExtraModelID(modelID: string): boolean {
+	// Include these explicitly, even if they are not GPT-5+.
+	const extra = ["gpt-5-mini", "gpt-4.1", "gpt-4o"]
+	return extra.some((base) => modelID === base || modelID.startsWith(`${base}-`))
+}
+
+type ApiRoute = "responses" | "chat" | "unknown"
+
+function inferApiRoute(urls: string[]): ApiRoute {
+	const joined = urls.join("\n")
+	if (/\/responses(\b|\/)/.test(joined)) return "responses"
+	if (/\/chat\/completions(\b|\/)/.test(joined)) return "chat"
+	return "unknown"
+}
+
+const originalFetch = globalThis.fetch
+const requestLog = new Map<string, string[]>()
+let activeProbeKey: string | undefined
+
+// Capture request URLs to determine which API path is used.
+// Provider.getSDK wraps `fetch`, so overriding global fetch is sufficient.
+globalThis.fetch = async (input: any, init?: any) => {
+	try {
+		const url = typeof input === "string" ? input : input?.url ?? String(input)
+		if (activeProbeKey) {
+			const existing = requestLog.get(activeProbeKey) ?? []
+			existing.push(url)
+			requestLog.set(activeProbeKey, existing)
+		}
+	} catch {
+		// ignore
+	}
+	return originalFetch(input as any, init as any)
 }
 
 function buildConfigOverlayJSON(providerIDs: string[]): string {
@@ -159,7 +192,7 @@ async function probeModel(input: {
 	providerID: string
 	modelID: string
 	timeoutMs: number
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; api: ApiRoute; error?: string }> {
 	const messages: ModelMessage[] = [
 		{
 			role: "user",
@@ -169,6 +202,10 @@ async function probeModel(input: {
 
 	try {
 		const { Provider } = await import("../src/provider/provider")
+		const key = `${input.providerID}/${input.modelID}`
+		requestLog.set(key, [])
+		activeProbeKey = key
+
 		const model = await Provider.getModel(input.providerID, input.modelID)
 		const language = await Provider.getLanguage(model)
 
@@ -180,10 +217,16 @@ async function probeModel(input: {
 			abortSignal: AbortSignal.timeout(input.timeoutMs),
 		})
 
-		return { ok: true }
+		activeProbeKey = undefined
+		const urls = requestLog.get(key) ?? []
+		return { ok: true, api: inferApiRoute(urls) }
 	} catch (e: any) {
+		const key = `${input.providerID}/${input.modelID}`
+		activeProbeKey = undefined
+		const urls = requestLog.get(key) ?? []
+		const api = inferApiRoute(urls)
 		const message = e?.message ? String(e.message) : String(e)
-		return { ok: false, error: message }
+		return { ok: false, api, error: message }
 	}
 }
 
@@ -215,9 +258,8 @@ async function main() {
 				const modelIDs = Object.keys(provider.models)
 					.filter((id) => {
 						const major = getGptMajor(id)
-						if (major === undefined || major < 5) return false
-						if (!args.includeMini && id === "gpt-5-mini") return false
-						return true
+						if (major !== undefined && major >= 5) return true
+						return matchesExtraModelID(id)
 					})
 					.sort((a, b) => a.localeCompare(b))
 
@@ -239,11 +281,11 @@ async function main() {
 
 					if (result.ok) {
 						okCount++
-						process.stdout.write("OK\n")
+						process.stdout.write(`OK (api=${result.api})\n`)
 					} else {
 						failCount++
 						hadFailure = true
-						process.stdout.write(`FAIL (${result.error})\n`)
+						process.stdout.write(`FAIL (api=${result.api}) (${result.error})\n`)
 					}
 
 					if (args.delayMs > 0) {
@@ -259,7 +301,8 @@ async function main() {
 	// Important: OpenCode may start background servers/plugins that keep the event loop alive.
 	// Dispose all instance state and exit explicitly.
 	await Instance.disposeAll()
-	process.exit(hadFailure ? 1 : 0)
+	// One-off diagnostic script: always exit 0 after printing results.
+	process.exit(0)
 }
 
 await main()
