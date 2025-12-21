@@ -132,7 +132,7 @@ let activeProbeKey: string | undefined
 
 // Capture request URLs to determine which API path is used.
 // Provider.getSDK wraps `fetch`, so overriding global fetch is sufficient.
-globalThis.fetch = async (input: any, init?: any) => {
+const patchedFetch = (async (input: any, init?: any) => {
 	try {
 		const url = typeof input === "string" ? input : input?.url ?? String(input)
 		if (activeProbeKey) {
@@ -144,7 +144,11 @@ globalThis.fetch = async (input: any, init?: any) => {
 		// ignore
 	}
 	return originalFetch(input as any, init as any)
-}
+}) as typeof fetch
+
+// Bun's fetch type includes `preconnect`, preserve it.
+;(patchedFetch as any).preconnect = (originalFetch as any).preconnect
+;(globalThis as any).fetch = patchedFetch
 
 function buildConfigOverlayJSON(providerIDs: string[]): string {
 	// Merge into any existing OPENCODE_CONFIG_CONTENT the user provided.
