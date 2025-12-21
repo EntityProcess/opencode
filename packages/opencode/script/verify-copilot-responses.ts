@@ -200,6 +200,7 @@ async function main() {
 	process.stdout.write(`Providers: ${args.providerIDs.join(", ")}\n`)
 	process.stdout.write(`Timeout: ${args.timeoutMs}ms, Delay: ${args.delayMs}ms\n\n`)
 
+	let hadFailure = false
 	await Instance.provide({
 		directory: process.cwd(),
 		async fn() {
@@ -241,6 +242,7 @@ async function main() {
 						process.stdout.write("OK\n")
 					} else {
 						failCount++
+						hadFailure = true
 						process.stdout.write(`FAIL (${result.error})\n`)
 					}
 
@@ -253,6 +255,11 @@ async function main() {
 			}
 		},
 	})
+
+	// Important: OpenCode may start background servers/plugins that keep the event loop alive.
+	// Dispose all instance state and exit explicitly.
+	await Instance.disposeAll()
+	process.exit(hadFailure ? 1 : 0)
 }
 
 await main()
