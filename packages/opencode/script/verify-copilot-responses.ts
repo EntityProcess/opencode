@@ -2,7 +2,7 @@
 
 import path from "path"
 import { fileURLToPath } from "url"
-import { streamText, type ModelMessage } from "ai"
+import { generateText, type ModelMessage } from "ai"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -169,19 +169,13 @@ async function probeModel(input: {
 		const model = await Provider.getModel(input.providerID, input.modelID)
 		const language = await Provider.getLanguage(model)
 
-		const stream = await streamText({
+		// GitHub Copilot Responses API currently requires max_output_tokens >= 16.
+		await generateText({
 			model: language,
 			messages,
-			maxOutputTokens: 8,
+			maxOutputTokens: 16,
 			abortSignal: AbortSignal.timeout(input.timeoutMs),
 		})
-
-		for await (const part of stream.fullStream) {
-			// Any successful stream event is enough to consider the route supported.
-			if (part.type === "text-delta" || part.type === "reasoning-delta" || part.type === "start") {
-				break
-			}
-		}
 
 		return { ok: true }
 	} catch (e: any) {
