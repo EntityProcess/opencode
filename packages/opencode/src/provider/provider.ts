@@ -49,8 +49,35 @@ export namespace Provider {
     return Number(match[1]) >= 5
   }
 
+  /**
+   * Check if a Claude model supports extended thinking via Copilot Responses API.
+   * Claude 4+ models (Opus 4, Sonnet 4, Haiku 4.5) support extended thinking.
+   */
+  function isClaudeWithReasoning(modelID: string): boolean {
+    const id = modelID.toLowerCase()
+    if (!id.includes("claude")) return false
+
+    // Claude 4+ models support extended thinking
+    // Patterns: claude-opus-4, claude-sonnet-4, claude-haiku-4.5, claude-opus-4.5, etc.
+    const match = /claude-(?:opus|sonnet|haiku)-(\d+)/.exec(id)
+    if (!match) return false
+
+    const majorVersion = Number(match[1])
+    return majorVersion >= 4
+  }
+
   function shouldUseCopilotResponsesApi(modelID: string): boolean {
-    return isGpt5OrLater(modelID) && !modelID.startsWith("gpt-5-mini")
+    // GPT-5+ models (except gpt-5-mini which uses chat API)
+    if (isGpt5OrLater(modelID) && !modelID.startsWith("gpt-5-mini")) {
+      return true
+    }
+
+    // Claude 4+ models with reasoning support
+    if (isClaudeWithReasoning(modelID)) {
+      return true
+    }
+
+    return false
   }
 
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {

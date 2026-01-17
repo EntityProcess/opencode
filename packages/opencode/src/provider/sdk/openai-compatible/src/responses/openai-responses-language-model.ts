@@ -293,7 +293,9 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       top_logprobs: topLogprobs,
 
       // model-specific settings:
+      // OpenAI reasoning models (GPT-5, o-series)
       ...(modelConfig.isReasoningModel &&
+        !modelConfig.isClaudeModel &&
         (openaiOptions?.reasoningEffort != null || openaiOptions?.reasoningSummary != null) && {
           reasoning: {
             ...(openaiOptions?.reasoningEffort != null && {
@@ -301,6 +303,16 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
             }),
             ...(openaiOptions?.reasoningSummary != null && {
               summary: openaiOptions.reasoningSummary,
+            }),
+          },
+        }),
+      // Claude extended thinking
+      ...(modelConfig.isClaudeModel &&
+        openaiOptions?.thinking != null && {
+          thinking: {
+            type: openaiOptions.thinking.type,
+            ...(openaiOptions.thinking.budgetTokens != null && {
+              budget_tokens: openaiOptions.thinking.budgetTokens,
             }),
           },
         }),
@@ -1607,10 +1619,28 @@ function isErrorChunk(chunk: z.infer<typeof openaiResponsesChunkSchema>): chunk 
 
 type ResponsesModelConfig = {
   isReasoningModel: boolean
+  isClaudeModel: boolean
   systemMessageMode: "remove" | "system" | "developer"
   requiredAutoTruncation: boolean
   supportsFlexProcessing: boolean
   supportsPriorityProcessing: boolean
+}
+
+/**
+ * Check if a model ID represents a Claude model with reasoning support.
+ * Claude 4+ models (Opus 4, Sonnet 4, Haiku 4.5) support extended thinking.
+ */
+function isClaudeWithReasoning(modelId: string): boolean {
+  const id = modelId.toLowerCase()
+  if (!id.includes("claude")) return false
+
+  // Claude 4+ models support extended thinking
+  // Patterns: claude-opus-4, claude-sonnet-4, claude-haiku-4.5, claude-opus-4.5, etc.
+  const match = /claude-(?:opus|sonnet|haiku)-(\d+)/.exec(id)
+  if (!match) return false
+
+  const majorVersion = Number(match[1])
+  return majorVersion >= 4
 }
 
 function getResponsesModelConfig(modelId: string): ResponsesModelConfig {
@@ -1629,6 +1659,16 @@ function getResponsesModelConfig(modelId: string): ResponsesModelConfig {
     systemMessageMode: "system" as const,
     supportsFlexProcessing,
     supportsPriorityProcessing,
+    isClaudeModel: false,
+  }
+
+  // Claude 4+ models with extended thinking support
+  if (isClaudeWithReasoning(modelId)) {
+    return {
+      ...defaults,
+      isReasoningModel: true,
+      isClaudeModel: true,
+    }
   }
 
   // gpt-5-chat models are non-reasoning
@@ -1708,6 +1748,19 @@ const openaiResponsesProviderOptionsSchema = z.object({
   strictJsonSchema: z.boolean().nullish(),
   textVerbosity: z.enum(["low", "medium", "high"]).nullish(),
   user: z.string().nullish(),
+
+  /**
+   * Claude extended thinking configuration.
+   * Only applies to Claude 4+ models via GitHub Copilot.
+   *
+   * @example { type: "enabled", budgetTokens: 16000 }
+   */
+  thinking: z
+    .object({
+      type: z.enum(["enabled", "disabled"]),
+      budgetTokens: z.number().optional(),
+    })
+    .nullish(),
 })
 
 export type OpenAIResponsesProviderOptions = z.infer<typeof openaiResponsesProviderOptionsSchema>

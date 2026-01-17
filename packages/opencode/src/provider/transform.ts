@@ -480,6 +480,37 @@ export namespace ProviderTransform {
       case "@ai-sdk/perplexity":
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/perplexity
         return {}
+
+      case "@ai-sdk/github-copilot":
+        // Claude models via GitHub Copilot use extended thinking
+        if (id.includes("claude")) {
+          return {
+            high: {
+              thinking: {
+                type: "enabled",
+                budgetTokens: 16000,
+              },
+            },
+            max: {
+              thinking: {
+                type: "enabled",
+                budgetTokens: 31999,
+              },
+            },
+          }
+        }
+        // GPT-5+ models via GitHub Copilot use reasoningEffort
+        if (id.includes("gpt-5")) {
+          return Object.fromEntries(
+            WIDELY_SUPPORTED_EFFORTS.map((effort) => [
+              effort,
+              {
+                reasoningEffort: effort,
+              },
+            ]),
+          )
+        }
+        return {}
     }
     return {}
   }
@@ -555,6 +586,19 @@ export namespace ProviderTransform {
         result["reasoningSummary"] = "auto"
       }
     }
+
+    // Claude models via GitHub Copilot: enable extended thinking by default
+    if (
+      input.model.api.npm === "@ai-sdk/github-copilot" &&
+      input.model.api.id.includes("claude") &&
+      input.model.capabilities.reasoning
+    ) {
+      result["thinking"] = {
+        type: "enabled",
+        budgetTokens: 16000,
+      }
+    }
+
     return result
   }
 
@@ -577,6 +621,10 @@ export namespace ProviderTransform {
         return { reasoning: { enabled: false } }
       }
       return { reasoningEffort: "minimal" }
+    }
+    // Claude models via GitHub Copilot: use minimal thinking budget
+    if (model.api.npm === "@ai-sdk/github-copilot" && model.api.id.includes("claude")) {
+      return { thinking: { type: "enabled", budgetTokens: 4000 } }
     }
     return {}
   }
